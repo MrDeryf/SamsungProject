@@ -1,4 +1,3 @@
-# src/datasets.py
 import cv2
 import pandas as pd
 import json
@@ -17,6 +16,7 @@ from . import config
 # =============================================================================
 # ТРАНСФОРМАЦИИ ИЗОБРАЖЕНИЙ (Albumentations)
 # =============================================================================
+
 
 def get_train_transforms() -> A.Compose:
     """
@@ -95,6 +95,7 @@ def get_inference_transforms() -> A.Compose:
 # КЛАСС ДАТАСЕТА
 # =============================================================================
 
+
 class ArtDataset(Dataset):
     """
     Кастомный Dataset для загрузки изображений с тремя метками:
@@ -107,14 +108,16 @@ class ArtDataset(Dataset):
         self,
         csv_path: Path,
         artist2id: Dict[str, int],
-        artist_labels_mapping: Dict[int, Dict[str, Any]],
+        era2id: Dict[str, int],
+        style2id: Dict[str, int],
         transforms=None,
         return_path: bool = False,
         random_seed: int = config.RANDOM_SEED,
     ):
         self.data = pd.read_csv(csv_path)
         self.artist2id = artist2id
-        self.artist_labels_mapping = artist_labels_mapping
+        self.era2id = era2id
+        self.style2id = style2id
         self.transforms = transforms
         self.return_path = return_path
         self.random = random.Random(random_seed)
@@ -124,16 +127,20 @@ class ArtDataset(Dataset):
         self.artist2id = normalized_mapping
 
         # Подготовка данных: фильтрация и нормализация
-        self.data["artist_clean"] = self.data["artist"].astype(str).str.strip().str.lower()
+        self.data["artist_clean"] = (
+            self.data["artist"].astype(str).str.strip().str.lower()
+        )
 
         # Фильтрация строк с неизвестными художниками
         original_len = len(self.data)
-        self.data = self.data[self.data["artist_clean"].isin(self.artist2id.keys())].copy()
+        self.data = self.data[
+            self.data["artist_clean"].isin(self.artist2id.keys())
+        ].copy()
         filtered_len = len(self.data)
 
         if filtered_len < original_len:
             print(
-                f"⚠️ Отфильтровано {original_len - filtered_len} изображений "
+                f" Отфильтровано {original_len - filtered_len} изображений "
                 f"с неизвестными художниками в {csv_path.name}"
             )
 
@@ -143,10 +150,14 @@ class ArtDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Dict[str, int], Optional[str]]:
+    def __getitem__(
+        self, idx: int
+    ) -> Tuple[torch.Tensor, Dict[str, int], Optional[str]]:
         row = self.data.iloc[idx]
         img_path = Path(row["image_path"])
         artist_name = row["artist"].strip().lower()
+        era = row["era"]
+        style = self.random.choice(row["styles"])
 
         # Загрузка изображения
         image = cv2.imread(str(img_path))
@@ -164,17 +175,8 @@ class ArtDataset(Dataset):
 
         # Получение ID художника
         artist_id = self.artist2id[artist_name]
-
-        # Получение меток стиля и эпохи из маппинга
-        labels_info = self.artist_labels_mapping.get(
-            artist_id, {"style_ids": [0], "era_id": 0}
-        )
-
-        era_id = labels_info["era_id"]
-        style_ids = labels_info["style_ids"]
-        
-        # Случайный выбор стиля, если их несколько
-        style_id = self.random.choice(style_ids) if style_ids else 0
+        era_id = self.era2id[era]
+        style_id = self.style2id[style]
 
         labels = {"artist": artist_id, "style": style_id, "era": era_id}
 
@@ -187,6 +189,7 @@ class ArtDataset(Dataset):
 # =============================================================================
 # УТИЛИТЫ ДЛЯ ЗАГРУЗКИ ДАННЫХ И СОЗДАНИЯ DATALOADERS
 # =============================================================================
+
 
 def load_all_mappings(
     processed_dir: Path = config.PROCESSED_DATA_DIR,
@@ -203,7 +206,7 @@ def load_all_mappings(
     artist2id_path = processed_dir / "artist2id.json"
     if not artist2id_path.exists():
         raise FileNotFoundError(f"Файл {artist2id_path} не найден.")
-    
+
     with open(artist2id_path, "r", encoding="utf-8") as f:
         artist2id = json.load(f)
 
@@ -222,31 +225,26 @@ def load_all_mappings(
             era2id = json.load(f)
 
     # Импорт функций из data_processing для создания маппинга artist -> labels,
-    # если его нет готового или нужно пересоздать. 
+    # если его нет готового или нужно пересоздать.
     # В идеале этот маппинг тоже должен сохраняться, но в ноутбуке он создавался динамически.
     # Для чистоты структуры вызовем функцию создания маппинга.
-    
+
     # Чтобы избежать циклического импорта, импортируем функцию здесь или перенесем логику.
     # В данном случае, так как data_processing.py уже написан, импортируем.
     from .data_processing import (
-        load_artist_metadata, 
-        create_artist_to_labels_mapping,
-        create_era_and_style_mappings
+        load_artist_metadata,
+        create_era_and_style_mappings,
     )
 
     # Если маппинги стилей/эпох не найдены, создаём их (фоллбэк)
     if not style2id or not era2id:
         print("⚠️ style2id или era2id не найдены, создаём их заново...")
         metadata_df = load_artist_metadata(metadata_csv)
-        (style2id, era2id), _ = create_era_and_style_mappings(metadata_df, artist2id, processed_dir)
+        (style2id, era2id), _ = create_era_and_style_mappings(
+            metadata_df, artist2id, processed_dir
+        )
 
-    # Создание маппинга artist → labels
-    metadata_df = load_artist_metadata(metadata_csv)
-    artist_labels_mapping = create_artist_to_labels_mapping(
-        metadata_df, artist2id, style2id, era2id, random_seed
-    )
-
-    return artist2id, style2id, era2id, artist_labels_mapping
+    return artist2id, style2id, era2id
 
 
 def collate_fn(batch):
@@ -288,7 +286,8 @@ def collate_fn(batch):
 def create_dataloaders(
     data_dir: Path,
     artist2id: Dict[str, int],
-    artist_labels_mapping: Dict[int, Dict[str, Any]],
+    era2id: Dict[str, int],
+    style2id: Dict[str, int],
     batch_size: int = config.BATCH_SIZE,
     num_workers: int = config.NUM_WORKERS,
     pin_memory: bool = config.PIN_MEMORY,
@@ -305,7 +304,8 @@ def create_dataloaders(
     train_dataset = ArtDataset(
         csv_path=data_dir / "train.csv",
         artist2id=artist2id,
-        artist_labels_mapping=artist_labels_mapping,
+        era2id=era2id,
+        style2id=style2id,
         transforms=train_transforms,
         random_seed=random_seed,
     )
@@ -313,7 +313,8 @@ def create_dataloaders(
     val_dataset = ArtDataset(
         csv_path=data_dir / "val.csv",
         artist2id=artist2id,
-        artist_labels_mapping=artist_labels_mapping,
+        era2id=era2id,
+        style2id=style2id,
         transforms=val_transforms,
         random_seed=random_seed,
     )
@@ -321,7 +322,8 @@ def create_dataloaders(
     test_dataset = ArtDataset(
         csv_path=data_dir / "test.csv",
         artist2id=artist2id,
-        artist_labels_mapping=artist_labels_mapping,
+        era2id=era2id,
+        style2id=style2id,
         transforms=test_transforms,
         return_path=True,  # Для теста нужны пути, чтобы строить отчёты
         random_seed=random_seed,
@@ -373,7 +375,7 @@ def calculate_class_weights(
     """
     df = pd.read_csv(train_csv)
     df["artist_clean"] = df["artist"].astype(str).str.strip().str.lower()
-    
+
     weights = {}
 
     for task, id_mapping in [
@@ -401,7 +403,7 @@ def calculate_class_weights(
                 weight_per_style = 1.0 / len(style_ids) if style_ids else 1.0
                 for sid in style_ids:
                     class_counts[sid] = class_counts.get(sid, 0) + weight_per_style
-                continue 
+                continue
             else:  # era
                 class_id = artist_labels_mapping[artist_id]["era_id"]
 
