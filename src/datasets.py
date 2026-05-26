@@ -120,7 +120,6 @@ class ArtDataset(Dataset):
         self.style2id = style2id
         self.transforms = transforms
         self.return_path = return_path
-        self.random = random.Random(random_seed)
 
         # Нормализация имен художников в маппинге
         normalized_mapping = {k.strip().lower(): v for k, v in self.artist2id.items()}
@@ -157,7 +156,8 @@ class ArtDataset(Dataset):
         img_path = Path(row["image_path"])
         artist_name = row["artist"].strip().lower()
         era = row["era"]
-        style = self.random.choice(row["styles"])
+        style = row["styles"]
+
 
         # Загрузка изображения
         image = cv2.imread(str(img_path))
@@ -368,53 +368,62 @@ def calculate_class_weights(
     style2id: Dict[str, int],
     era2id: Dict[str, int],
     train_csv: Path,
-    artist_labels_mapping: Dict[int, Dict[str, Any]],
 ) -> Dict[str, torch.Tensor]:
     """
-    Вычисляет веса классов для всех трёх задач по Формуле: ω_c = N_total / (C * N_c).
+    Вычисляет веса классов для всех трёх задач по Формуле (2.1).
+    
+    ω_c = N_total / (C * N_c)
+    
+    Args:
+        artist2id, style2id, era2id: маппинги "название метки -> class_id"
+        train_csv: путь к обучающей выборке (должна содержать столбцы 'artist', 'style', 'era')
+        
+    Returns:
+        Словарь весов: {'artist': ..., 'style': ..., 'era': ...}
     """
     df = pd.read_csv(train_csv)
-    df["artist_clean"] = df["artist"].astype(str).str.strip().str.lower()
-
+    N_total = len(df)
+    
     weights = {}
-
-    for task, id_mapping in [
-        ("artist", artist2id),
-        ("style", style2id),
-        ("era", era2id),
-    ]:
-        N_total = len(df)
+    
+    # Конфигурация задач: (имя задачи, имя столбца в CSV, соответствующий маппинг)
+    tasks_config = [
+        ('artist', 'artist', artist2id),
+        ('style', 'styles', style2id),
+        ('era', 'era', era2id)
+    ]
+    
+    for task, col_name, id_mapping in tasks_config:
         C = len(id_mapping)
-
         class_counts = {}
-
+        
         for _, row in df.iterrows():
-            artist_name = row["artist_clean"]
-            artist_id = artist2id.get(artist_name)
-
-            if artist_id is None or artist_id not in artist_labels_mapping:
+            raw_val = row[col_name]
+            if pd.isna(raw_val):
                 continue
-
-            if task == "artist":
-                class_id = artist_id
-            elif task == "style":
-                # Для стиля: учитываем все стили художника пропорционально
-                style_ids = artist_labels_mapping[artist_id]["style_ids"]
-                weight_per_style = 1.0 / len(style_ids) if style_ids else 1.0
-                for sid in style_ids:
-                    class_counts[sid] = class_counts.get(sid, 0) + weight_per_style
+                
+            # Нормализация: приводим к строке, удаляем пробелы, приводим к нижнему регистру
+            labels = [lbl.strip().lower() for lbl in str(raw_val).split(',')]
+            
+            # Оставляем только те метки, которые присутствуют в текущем маппинге
+            valid_labels = [lbl for lbl in labels if lbl in id_mapping]
+            if not valid_labels:
                 continue
-            else:  # era
-                class_id = artist_labels_mapping[artist_id]["era_id"]
-
-            class_counts[class_id] = class_counts.get(class_id, 0) + 1
-
-        # Вычисление весов
-        task_weights = [0.0] * len(id_mapping)
+                
+            # Если в ячейке несколько меток, распределяем вес пропорционально (1 / k)
+            weight_per_label = 1.0 / len(valid_labels)
+            for lbl in valid_labels:
+                class_id = id_mapping[lbl]
+                class_counts[class_id] = class_counts.get(class_id, 0.0) + weight_per_label
+                
+        # Вычисление весов по формуле (2.1)
+        task_weights = [0.0] * C
         for class_name, class_id in id_mapping.items():
-            N_c = max(class_counts.get(class_id, 1), 1)  # Защита от 0
+            # N_c - количество примеров класса. Защита от 0, чтобы избежать деления на ноль.
+            N_c = max(class_counts.get(class_id, 0.0), 1.0)
             task_weights[class_id] = N_total / (C * N_c)
-
-        weights[task] = torch.FloatTensor(task_weights)
-
+            
+        # Рекомендуется использовать torch.tensor для совместимости с новыми версиями PyTorch
+        weights[task] = torch.tensor(task_weights, dtype=torch.float32)
+        
     return weights

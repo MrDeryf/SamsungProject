@@ -2,6 +2,7 @@
 import streamlit as st
 from PIL import Image
 import numpy as np
+from pathlib import Path
 from src.inference import get_inference_transforms, load_model, run_inference, GradCAMGenerator, apply_gradcam_overlay, GRAD_CAM_ALPHA, DEVICE
 
 # =============================================================================
@@ -12,12 +13,10 @@ st.title(" Атрибуция произведений искусства с Gra
 st.caption("Загрузите изображение картины для определения художника, стиля и эпохи с визуализацией внимания модели.")
 
 # Боковая панель
-with st.sidebar:
-    st.header(" Настройки")
-    weights_path = st.text_input("Путь к весам (.pth)", value="./model_final.pth")
-    mappings_dir = st.text_input("Папка с маппингами (JSON)", value="./mappings")
-    model_type = st.selectbox("Архитектура", ["parallel", "sequential"], index=0)
-    load_btn = st.button(" Загрузить модель", type="primary")
+
+weights_path = Path("model_weights/model_final.pth")
+mappings_dir = Path("data/mappings")
+model_type = "parallel"
 
 # Состояние приложения
 if 'model' not in st.session_state:
@@ -25,17 +24,17 @@ if 'model' not in st.session_state:
     st.session_state.mappings = None
     st.session_state.transforms = None
 
-if load_btn:
-    with st.spinner("Загрузка весов и конфигурации..."):
-        try:
-            model, id2artist, id2style, id2era = load_model(weights_path, mappings_dir, model_type)
-            st.session_state.model = model
-            st.session_state.mappings = (id2artist, id2style, id2era)
-            st.session_state.transforms = get_inference_transforms()
-            st.success("Модель успешно загружена в память!")
-        except Exception as e:
-            st.error(f"Ошибка загрузки: {e}")
-            st.session_state.model = None
+
+with st.spinner("Загрузка весов и конфигурации..."):
+    try:
+        model, id2artist, id2style, id2era = load_model(weights_path, mappings_dir, model_type)
+        st.session_state.model = model
+        st.session_state.mappings = (id2artist, id2style, id2era)
+        st.session_state.transforms = get_inference_transforms()
+        st.success("Модель успешно загружена в память!")
+    except Exception as e:
+        st.error(f"Ошибка загрузки: {e}")
+        st.session_state.model = None
 
 # Загрузчик изображений
 uploaded_file = st.file_uploader("Загрузите изображение картины", type=["jpg", "jpeg", "png"])
